@@ -1,1 +1,538 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Jun  8 15:31:15 2025
+
+@author: elahe
+"""
+
+
+import numpy as np
+
+from numpy.random import default_rng
+
+def ldpc_encode(info_bits, G):
+    """
+    Encode info_bits using LDPC generator matrix G over GF(2).
+    
+    Parameters:
+        info_bits (array-like): Binary vector of length k
+        G (ndarray): Generator matrix of shape (k, n)
+    
+    Returns:
+        codeword (ndarray): Encoded vector of length n
+    """
+    info_bits = np.array(info_bits) % 2
+    G = np.array(G) % 2
+    codeword = np.dot(info_bits, G) % 2
+    return codeword
+
+
+
+def verify_codeword(H, x):
+    H = np.array(H) % 2
+    x = np.array(x).reshape(-1, 1) % 2
+    syndrome = np.dot(H, x) % 2
+    return np.all(syndrome == 0)
+
+
+
+import numpy as np
+
+def binary_to_dna(x_1, x_2):
+    """
+    Convert two binary vectors x_1 and x_2 into a DNA codeword.
+    Mapping:
+        (0,0) -> A
+        (0,1) -> C
+        (1,0) -> T
+        (1,1) -> G
+    """
+    x_1 = np.array(x_1)
+    x_2 = np.array(x_2)
+    
+    assert len(x_1) == len(x_2), "x_1 and x_2 must have the same length"
+    
+    dna_map = {
+        (0, 0): 'A',
+        (0, 1): 'C',
+        (1, 0): 'T',
+        (1, 1): 'G'
+    }
+    
+    DNA_codeword = [dna_map[(x_1[i], x_2[i])] for i in range(len(x_1))]
+    return np.array(DNA_codeword)
+
+
+
+# Define DNA channel corruption
+def channel_corruption(DNA_codeword, p1, p2, p3):
+    rng = default_rng()
+    corrupted_DNA = DNA_codeword.copy()
+    
+    for i in range(len(DNA_codeword)):
+        base = DNA_codeword[i]
+        r = rng.random()
+        if base == 'A':
+            if r < p1:
+                corrupted_DNA[i] = 'C'
+            elif r < 2*p1:
+                corrupted_DNA[i] = 'T'
+            elif r < 2*p1 + p3:
+                corrupted_DNA[i] = 'G'
+        elif base == 'C':
+            if r < p1:
+                corrupted_DNA[i] = 'A'
+            elif r < 2*p1:
+                corrupted_DNA[i] = 'G'
+            elif r < 2*p1 + p2:
+                corrupted_DNA[i] = 'T'
+        elif base == 'T':
+            if r < p1:
+                corrupted_DNA[i] = 'A'
+            elif r < 2*p1:
+                corrupted_DNA[i] = 'G'
+            elif r < 2*p1 + p2:
+                corrupted_DNA[i] = 'C'
+        elif base == 'G':
+            if r < p1:
+                corrupted_DNA[i] = 'C'
+            elif r < 2*p1:
+                corrupted_DNA[i] = 'T'
+            elif r < 2*p1 + p3:
+                corrupted_DNA[i] = 'A'
+
+    # Map back to binary pairs
+    corrupted_x_1 = np.zeros(len(corrupted_DNA), dtype=int)
+    corrupted_x_2 = np.zeros(len(corrupted_DNA), dtype=int)
+    
+    for i, base in enumerate(corrupted_DNA):
+        if base == 'A':
+            corrupted_x_1[i], corrupted_x_2[i] = 0, 0
+        elif base == 'C':
+            corrupted_x_1[i], corrupted_x_2[i] = 0, 1
+        elif base == 'T':
+            corrupted_x_1[i], corrupted_x_2[i] = 1, 0
+        elif base == 'G':
+            corrupted_x_1[i], corrupted_x_2[i] = 1, 1
+
+    return corrupted_x_1, corrupted_x_2
+
+# Example usage
+
+
+def Channel_LLR_compute(y, p1, p2, p3):
+    """
+    Compute channel LLRs for binary observations y based on the DNA substitution model.
+    
+    The bit error rate (BER) is computed as:
+        BER = 2*p1 + p2 + p3
+        
+    LLR(i) = log(P(y_i | x_i = 0) / P(y_i | x_i = 1))
+    Under BSC assumption: 
+        LLR = log((1 - BER) / BER) if y_i = 0 
+            = -log((1 - BER) / BER) if y_i = 1
+    
+    Parameters:
+        y: numpy array of received bits (0 or 1)
+        p1, p2, p3: DNA base substitution probabilities
+    
+    Returns:
+        numpy array of LLRs
+    """
+    # Compute BER based on DNA symbol substitution model
+    ber = 2 * p1 + p2 + p3
+    assert 0 < ber < 0.5, "BER must be between 0 and 0.5 for valid LLR computation"
+
+    n = len(y)
+    LLR = np.zeros(n)
+    log_ratio = np.log((1 - ber) / ber)
+
+    for i in range(n):
+        LLR[i] = log_ratio if y[i] == 0 else -log_ratio
+
+    return LLR
+
+
+def find_neighbour_index_set(H, find_neighbors_of_a_VN, find_neighbors_of_a_CN, index):
+    """
+    Finds neighbor indices of a variable node (VN) or check node (CN) in an LDPC parity-check matrix.
+
+    Parameters:
+        H (ndarray): Parity-check matrix of shape (m, n)
+        find_neighbors_of_a_VN (bool): If True, find CN neighbors of a VN
+        find_neighbors_of_a_CN (bool): If True, find VN neighbors of a CN
+        index (int): Index of the node (VN or CN)
+
+    Returns:
+        list of indices corresponding to the neighbors
+    """
+    if find_neighbors_of_a_VN:
+        VN_index = index
+        return np.array(list(np.where(H[:, VN_index] == 1)[0]))  # CN indices connected to VN
+    elif find_neighbors_of_a_CN:
+        CN_index = index
+        return np.array(list(np.where(H[CN_index, :] == 1)[0]))  # VN indices connected to CN
+    else:
+        raise ValueError("One of find_neighbors_of_a_VN or find_neighbors_of_a_CN must be True.")
+        
+        
+        
+def binary_ldpc_decoder_for_dna_storage_min_sum(y_1, y_2, H, channel_LLR_code1, channel_LLR_code2, max_iters=50, alpha=1.0, offset=0.3):
+    n = H.shape[1]
+    m = H.shape[0]
+
+    LLR_VN_to_CN_code1 = np.zeros((max_iters, n, m))
+    LLR_CN_to_VN_code1 = np.zeros((max_iters, m, n))
+    LLR_VN_to_CN_code2 = np.zeros((max_iters, n, m))
+    LLR_CN_to_VN_code2 = np.zeros((max_iters, m, n))
+
+    bar_CH_1 = np.zeros((max_iters, n))
+    bar_CH_2 = np.zeros((max_iters, n))
+
+    # Initialization
+    for j in range(n):
+        for i in range(m):
+            if H[i, j] == 1:
+                LLR_VN_to_CN_code1[0, j, i] = channel_LLR_code1[j]
+                LLR_VN_to_CN_code2[0, j, i] = channel_LLR_code2[j]
+
+    for it in range(1, max_iters):
+        # VN message update (bar_CH update)
+        for j in range(n): # j is VN_index
+            neighbors = find_neighbour_index_set(H, find_neighbors_of_a_VN = True, find_neighbors_of_a_CN = False, index = j)
+            if (y_1[j], y_2[j]) in [(0, 1), (1, 0)]: 
+                
+                sum1 = np.sum(LLR_CN_to_VN_code2[it-1, neighbors, j])
+                sum2 = np.sum(LLR_CN_to_VN_code1[it-1, neighbors, j])
+                bar_CH_1[it, j] = channel_LLR_code1[j] - alpha * sum1
+                bar_CH_2[it, j] = channel_LLR_code2[j] - alpha * sum2
+            else:
+                bar_CH_1[it, j] = channel_LLR_code1[j]
+                bar_CH_2[it, j] = channel_LLR_code2[j]
+
+        # Check node update using Min-Sum approximation
+        for i in range(m):
+            neighbors = find_neighbour_index_set(H, find_neighbors_of_a_VN = False, find_neighbors_of_a_CN = True, index = i)
+            for j in neighbors:
+                others = [j_ for j_ in neighbors if j_ != j]
+
+                # Code 1
+                msgs_1 = np.array([LLR_VN_to_CN_code1[it, j_, i] for j_ in others])
+                signs_1 = np.prod(np.sign(msgs_1)) if len(msgs_1) > 0 else 1
+                min_val_1 = np.min(np.abs(msgs_1)) if len(msgs_1) > 0 else 0
+                corrected_val_1 = max(min_val_1 - offset, 0)
+                LLR_CN_to_VN_code1[it, i, j] = signs_1 * corrected_val_1
+
+                # Code 2
+                msgs_2 = np.array([LLR_VN_to_CN_code2[it, j_, i] for j_ in others])
+                signs_2 = np.prod(np.sign(msgs_2)) if len(msgs_2) > 0 else 1
+                min_val_2 = np.min(np.abs(msgs_2)) if len(msgs_2) > 0 else 0
+                corrected_val_2 = max(min_val_2 - offset, 0)
+                LLR_CN_to_VN_code2[it, i, j] = signs_2 * corrected_val_2
+
+        # Variable node message update
+        for j in range(n):
+            neighbors = find_neighbour_index_set(H, find_neighbors_of_a_VN = True, find_neighbors_of_a_CN = False, index = j)
+            for i in neighbors:
+                others = [i_ for i_ in neighbors if i_ != i]
+                sum1 = np.sum([LLR_CN_to_VN_code1[it, i_, j] for i_ in others])
+                sum2 = np.sum([LLR_CN_to_VN_code2[it, i_, j] for i_ in others])
+                LLR_VN_to_CN_code1[it, j, i] = bar_CH_1[it, j] + sum1
+                LLR_VN_to_CN_code2[it, j, i] = bar_CH_2[it, j] + sum2
+
+        # Soft output computation
+        hat_x_1 = np.zeros(n, dtype=int)
+        hat_x_2 = np.zeros(n, dtype=int)
+        for j in range(n):
+            neighbors = find_neighbour_index_set(H, find_neighbors_of_a_VN = True, find_neighbors_of_a_CN = False, index = j)
+            sum1 = np.sum(LLR_CN_to_VN_code1[it, neighbors, j])
+            sum2 = np.sum(LLR_CN_to_VN_code2[it, neighbors, j])
+            LLR_1 = bar_CH_1[it, j] + sum1
+            LLR_2 = bar_CH_2[it, j] + sum2
+            if LLR_1 < 0 :
+                hat_x_1[j] = 1 
+            if LLR_2 < 0:
+                hat_x_2[j] = 1 
+
+        # Optional stopping condition (commented to allow full iterations)
+        # if np.all(H @ hat_x_1 % 2 == 0) and np.all(H @ hat_x_2 % 2 == 0):
+        #     break
+
+    return hat_x_1, hat_x_2     
+
+import numpy as np
+
+def compute_ber(x_true, x_hat):
+    """
+    Compute the Bit Error Rate (BER) between true and estimated codewords.
+
+    Parameters:
+        x_true (array-like): Original binary vector (e.g., x_1)
+        x_hat (array-like): Decoded binary vector (e.g., hat_x_1)
+
+    Returns:
+        float: Bit Error Rate (BER) = (# of differing bits) / (total bits)
+    """
+    x_true = np.array(x_true).astype(int) % 2
+    x_hat = np.array(x_hat).astype(int) % 2
+    n_errors = np.sum(x_true != x_hat)
+    ber = n_errors / len(x_true)
+    return ber
+
+###################################
+
+import numpy as np
+# Function to check if matrix is in REF
+
+def is_row_echelon_form(matrix):
+    if not matrix.any():
+        return False
+
+    rows = matrix.shape[0]
+    cols = matrix.shape[1]
+    prev_leading_col = -1
+
+    for row in range(rows):
+        leading_col_found = False
+        for col in range(cols):
+            if matrix[row, col] != 0:
+                if col <= prev_leading_col:
+                    return False
+                prev_leading_col = col
+                leading_col_found = True
+                break
+        if not leading_col_found and any(matrix[row, col] != 0 for col in range(cols)):
+            return False
+    return True
+
+def find_nonzero_row(matrix, pivot_row, col):
+    nrows = matrix.shape[0]
+    for row in range(pivot_row, nrows):
+        if matrix[row, col] != 0:
+            return row
+    return None
+
+# Swapping rows so that we can have our non zero row on the top of the matrix
+def swap_rows(matrix, row1, row2):
+    matrix[[row1, row2]] = matrix[[row2, row1]]
+
+def make_pivot_one(matrix, pivot_row, col):
+    pivot_element = matrix[pivot_row, col]
+    matrix[pivot_row] //= pivot_element
+    # print(pivot_element)
+
+def eliminate_below(matrix, pivot_row, col):
+    nrows = matrix.shape[0]
+    pivot_element = matrix[pivot_row, col]
+    for row in range(pivot_row + 1, nrows):
+        factor = matrix[row, col]
+        matrix[row] -= factor * matrix[pivot_row]
+
+# Implementing above functions
+def row_echelon_form(matrix):
+    nrows = matrix.shape[0]
+    ncols = matrix.shape[1]
+    pivot_row = 0
+# this will run for number of column times. If matrix has 3 columns this loop will run for 3 times
+    for col in range(ncols):
+        nonzero_row = find_nonzero_row(matrix, pivot_row, col)
+        if nonzero_row is not None:
+            swap_rows(matrix, pivot_row, nonzero_row)
+            make_pivot_one(matrix, pivot_row, col)
+            eliminate_below(matrix, pivot_row, col)
+            pivot_row += 1
+    return matrix
+
+
+matrix = np.array([[2,-2,4,-2],[2,1,10,7],[-4,4,-8,4],[4,-1,14,6]])
+print("Matrix Before Converting:")
+print(matrix)
+print()
+result = row_echelon_form(matrix)
+print("After Converting to Row Echelon Form:")
+print(result)
+if is_row_echelon_form(result):
+    print("In REF")
+else:
+    print("Not in REF--------------->")
+    
+#####################
+#!/usr/bin/env python3
+import numpy as np
+import copy
+
+def find_smallest(array):
+    if len(array) == 1:
+        return 0
+    elif len(array) == 2:
+        return 0 if array[0] <= array[1] else 1
+    else:
+        mid = len(array) // 2
+        arrayA = array[:mid]
+        arrayB = array[mid:]
+        smallA = find_smallest(arrayA)
+        smallB = find_smallest(arrayB)
+        return smallA if arrayA[smallA] <= arrayB[smallB] else mid + smallB
+
+class peg:
+    """
+    Progressive edge growth algorithm for generating
+    LDPC matrices. Based on:
+    "Regular and Irregular Progressive-Edge Growth Tanner Graphs",
+    Xiao-Yu Hu, Evangelos Eleftheriou and Dieter M. Arnold.
+    IEEE Transactions on Information Theory, January 2005.
+    """
+
+    def __init__(self, nvar, nchk, degree_sequence):
+        self.degree_sequence = degree_sequence
+        self.nvar = nvar
+        self.nchk = nchk
+        self.H = np.zeros((nchk, nvar), dtype=np.int32)
+        self.sym_degrees = np.zeros(nvar, dtype=np.int32)
+        self.chk_degrees = np.zeros(nchk, dtype=np.int32)
+        self.I_edge_chk2var = [[0 for _ in range(nvar)] for _ in range(nchk)]
+        self.I_edge_var2chk = [[0 for _ in range(nchk)] for _ in range(nvar)]
+
+    def grow_edge(self, var, chk):
+        self.I_edge_chk2var[chk][var] = 1
+        self.I_edge_var2chk[var][chk] = 1
+        self.H[chk, var] = 1
+        self.sym_degrees[var] += 1
+        self.chk_degrees[chk] += 1
+
+    def bfs(self, var):
+        var_list = np.zeros(self.nvar, dtype=np.int32)
+        var_list[var] = 1
+        cur_chk_list = [0] * self.nchk
+        new_chk_list = [0] * self.nchk
+        chk_Q = []
+        var_Q = [var]
+
+        while True:
+            for _vars in var_Q:
+                for i in range(self.nchk):
+                    if self.H[i, _vars] == 1 and cur_chk_list[i] == 0:
+                        new_chk_list[i] = 1
+                        chk_Q.append(i)
+            var_Q = []
+            for _chks in chk_Q:
+                for j in range(self.nvar):
+                    if self.H[_chks, j] == 1 and var_list[j] == 0:
+                        var_list[j] = 1
+                        var_Q.append(j)
+            chk_Q = []
+            if new_chk_list.count(1) == self.nchk or new_chk_list == cur_chk_list:
+                return self.find_smallest_chk(cur_chk_list)
+            else:
+                cur_chk_list = copy.copy(new_chk_list)
+
+    def find_smallest_chk(self, cur_chk_list):
+        index = []
+        degree = []
+        for i in range(len(cur_chk_list)):
+            if cur_chk_list[i] == 0:
+                index.append(i)
+                degree.append(self.chk_degrees[i])
+        return index[find_smallest(degree)]
+
+    def progressive_edge_growth(self):
+        for var in range(self.nvar):
+            print("Edge growth at var", var)
+            for k in range(self.degree_sequence[var]):
+                if k == 0:
+                    smallest_degree_chk = find_smallest(self.chk_degrees)
+                    self.grow_edge(var, smallest_degree_chk)
+                else:
+                    chk = self.bfs(var)
+                    self.grow_edge(var, chk)
+
+
+##############
+
+
+
+
+###
+
+if __name__ == "__main__":
+    landa = 0.03
+    p1 = landa 
+    p2 = 3 * landa
+    p3 = 0.0001
+
+    nvar = 1000  # number of variable nodes (columns)
+    nchk = 500  # number of check nodes (rows)
+    degree_sequence = [6] * nvar
+
+    peg_generator = peg(nvar, nchk, degree_sequence)
+    peg_generator.progressive_edge_growth()
+
+    H = peg_generator.H
+    print("\nGenerated H matrix:")
+    print(H)
+    print("H shape:", H.shape)
+
+    # Compute dimensions
+    n = H.shape[1]
+    m = H.shape[0]
+    k = n - m
+
+    # Convert H to REF
+    H_standard = row_echelon_form(H.copy())
+
+    # Extract P (transpose of left side of H_standard)
+    P = H_standard[0:m, 0:k].T
+
+    # Construct G = [I | P]
+    G = np.concatenate((np.eye(k, dtype=int), P), axis=1)
+
+    print("Generator matrix G:")
+    print(G)
+    print("G shape:", G.shape)
+
+    
+    
+    
+
+    
+    info_1 = np.random.randint(0, 2, size=k)
+    info_2 = np.random.randint(0, 2, size=k)
+    
+    x_1 = ldpc_encode(info_1, G)
+    x_2 = ldpc_encode(info_2, G)
+    
+    DNA_codeword = binary_to_dna(x_1, x_2)
+    
+    y_1 , y_2 = channel_corruption(DNA_codeword, p1, p2, p3)
+    print("y_1 shape" , y_1.shape)  # should be (996,)
+    print("y_2 shape" , y_2.shape)
+    
+    landa = 0.03
+    p1 = landa 
+    p2 = 3 * landa
+    p3 = 0.0001
+
+    channel_LLR_code1 = Channel_LLR_compute(y_1, p1, p2, p3)
+    channel_LLR_code2 = Channel_LLR_compute(y_2, p1, p2, p3)
+    print("channel_LLR_code1 shape" , channel_LLR_code1.shape)
+    print("channel_LLR_code2 shape" , channel_LLR_code2.shape)
+    
+    hat_x_1, hat_x_2 = binary_ldpc_decoder_for_dna_storage_min_sum(y_1, y_2, H, channel_LLR_code1, channel_LLR_code2, max_iters=5, alpha=0.1)
+    print("hat_x_1 shape" , hat_x_1.shape)
+    print("hat_x_2 shape" , hat_x_2.shape)
+    
+    ber_1 = compute_ber(x_1, hat_x_1)
+    ber_2 = compute_ber(x_2, hat_x_2)
+    
+    ber = ber_1 + ber_2
+    print("BER:", ber)
+
+
+
+    
+
+
+###
+
+
 
